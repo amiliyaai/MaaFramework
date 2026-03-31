@@ -9,6 +9,56 @@
 
 MAA_CTRL_NS_BEGIN
 
+namespace
+{
+
+#ifdef __ANDROID__
+class ScopedAndroidNativeThreadAttach
+{
+public:
+    explicit ScopedAndroidNativeThreadAttach(const std::shared_ptr<MAA_CTRL_UNIT_NS::ControlUnitAPI>& control_unit)
+        : unit_(std::dynamic_pointer_cast<MAA_CTRL_UNIT_NS::AndroidNativeControlUnitAPI>(control_unit))
+    {
+        if (!unit_ || !unit_->connected()) {
+            return;
+        }
+
+        env_ = unit_->attach_thread();
+        attach_failed_ = env_ == nullptr;
+        if (attach_failed_) {
+            LogError << "Android native control unit attach_thread returned nullptr";
+        }
+    }
+
+    ScopedAndroidNativeThreadAttach(const ScopedAndroidNativeThreadAttach&) = delete;
+    ScopedAndroidNativeThreadAttach& operator=(const ScopedAndroidNativeThreadAttach&) = delete;
+
+    ~ScopedAndroidNativeThreadAttach()
+    {
+        if (!unit_ || !env_) {
+            return;
+        }
+
+        int ret = unit_->detach_thread(env_);
+        if (ret != 0) {
+            LogWarn << "Android native control unit detach_thread failed" << VAR(ret);
+        }
+    }
+
+    bool ready() const
+    {
+        return !attach_failed_;
+    }
+
+private:
+    std::shared_ptr<MAA_CTRL_UNIT_NS::AndroidNativeControlUnitAPI> unit_;
+    void* env_ = nullptr;
+    bool attach_failed_ = false;
+};
+#endif
+
+} // namespace
+
 ControllerAgent::ControllerAgent(std::shared_ptr<MAA_CTRL_UNIT_NS::ControlUnitAPI> control_unit)
     : control_unit_(std::move(control_unit))
 {
@@ -710,15 +760,12 @@ bool ControllerAgent::handle_relative_move(const RelativeMoveParam& param)
         return false;
     }
 
-    auto win32_unit = std::dynamic_pointer_cast<MAA_CTRL_UNIT_NS::Win32ControlUnitAPI>(control_unit_);
-    if (!win32_unit) {
-        LogError << "Relative move is only supported for Win32 controllers. Current controller type does not support relative movement.";
-        return false;
+    if (auto unit = std::dynamic_pointer_cast<MAA_CTRL_UNIT_NS::RelativeMovableUnit>(control_unit_)) {
+        return unit->relative_move(param.dx, param.dy);
     }
 
-    bool ret = win32_unit->relative_move(param.dx, param.dy);
-
-    return ret;
+    LogError << "Relative move is not supported for this controller type";
+    return false;
 }
 
 bool ControllerAgent::handle_click_key(const ClickKeyParam& param)
@@ -867,25 +914,15 @@ bool ControllerAgent::handle_scroll(const ScrollParam& param)
     }
 
     cv::Point point = preproc_touch_point(param.point);
-    auto move_to_scroll_position = [&]() {
-        if (!control_unit_->touch_move(0, point.x, point.y, 0)) {
-            LogWarn << "Failed to move to scroll position" << VAR(point);
-        }
-    };
-
-    auto win32_unit = std::dynamic_pointer_cast<MAA_CTRL_UNIT_NS::Win32ControlUnitAPI>(control_unit_);
-    if (win32_unit) {
-        move_to_scroll_position();
-        return win32_unit->scroll(param.dx, param.dy);
+    if (!control_unit_->touch_move(0, point.x, point.y, 0)) {
+        LogWarn << "Failed to move to scroll position" << VAR(point);
     }
 
-    auto custom_unit = std::dynamic_pointer_cast<MAA_CTRL_UNIT_NS::CustomControlUnitAPI>(control_unit_);
-    if (custom_unit) {
-        move_to_scroll_position();
-        return custom_unit->scroll(param.dx, param.dy);
+    if (auto unit = std::dynamic_pointer_cast<MAA_CTRL_UNIT_NS::ScrollableUnit>(control_unit_)) {
+        return unit->scroll(param.dx, param.dy);
     }
 
-    LogError << "Scroll is only supported for Win32 controllers and custom controllers that implement scroll.";
+    LogError << "Scroll is not supported for this controller type";
     return false;
 }
 
@@ -896,16 +933,17 @@ bool ControllerAgent::handle_shell(const ShellParam& param)
         return false;
     }
 
-    auto adb_unit = std::dynamic_pointer_cast<MAA_CTRL_UNIT_NS::AdbControlUnitAPI>(control_unit_);
-    if (!adb_unit) {
-        LogError << "Shell commands are only supported for ADB controllers. Current controller type does not support shell execution.";
+    std::string output;
+    auto timeout = param.shell_timeout < 0 ? std::chrono::milliseconds::max() : std::chrono::milliseconds(param.shell_timeout);
+
+    auto unit = std::dynamic_pointer_cast<MAA_CTRL_UNIT_NS::ShellableUnit>(control_unit_);
+    if (!unit) {
+        LogError << "Shell is not supported for this controller type";
         return false;
     }
 
-    std::string output;
-    // shell_timeout < 0 表示无限等待
-    auto timeout = param.shell_timeout < 0 ? std::chrono::milliseconds::max() : std::chrono::milliseconds(param.shell_timeout);
-    bool ret = adb_unit->shell(param.cmd, output, timeout);
+    bool ret = unit->shell(param.cmd, output, timeout);
+
     if (ret) {
         std::unique_lock lock(shell_output_mutex_);
         shell_output_ = std::move(output);
@@ -932,6 +970,13 @@ bool ControllerAgent::check_stop()
 bool ControllerAgent::run_action(typename AsyncRunner<Action>::Id id, Action action)
 {
     bool ret = false;
+
+#ifdef __ANDROID__
+    const ScopedAndroidNativeThreadAttach attach(control_unit_);
+    if (!attach.ready()) {
+        return false;
+    }
+#endif
 
     bool notify = false;
     {

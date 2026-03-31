@@ -343,8 +343,48 @@ class MaaWin32InputMethodEnum(IntEnum):
     PostMessageWithWindowPos = 1 << 8
 
 
-# No bitwise OR, just set it
-MaaDbgControllerType = ctypes.c_uint64
+MaaMacOSScreencapMethod = ctypes.c_uint64
+
+
+class MaaMacOSScreencapMethodEnum(IntEnum):
+    """
+    MacOS screencap method.
+
+    No bitwise OR, select ONE method only.
+
+    No default value. Client should choose one as default.
+
+    | Method          | Speed     | Compatibility | Background Support | Notes                  |
+    |-----------------|-----------|---------------|--------------------|------------------------|
+    | ScreenCaptureKit| Very Fast | High          | Yes                | Requires macOS 12.3+   |
+    """
+
+    Null = 0
+
+    ScreenCaptureKit = 1
+
+
+MaaMacOSInputMethod = ctypes.c_uint64
+
+
+class MaaMacOSInputMethodEnum(IntEnum):
+    """
+    MacOS input method.
+
+    No bitwise OR, select ONE method only.
+
+    No default value. Client should choose one as default.
+
+    | Method      | Compatibility | Background Support | Notes                      |
+    |-------------|---------------|--------------------|----------------------------|
+    | GlobalEvent | High          | No                 | Global event injection     |
+    | PostToPid   | Medium        | Yes                | Post event to specific PID |
+    """
+
+    Null = 0
+
+    GlobalEvent = 1
+    PostToPid = 1 << 1
 
 # No bitwise OR, just set it
 MaaGamepadType = ctypes.c_uint64
@@ -440,12 +480,6 @@ class MaaControllerFeatureEnum(IntEnum):
     UseKeyboardDownAndUpInsteadOfClick = 1 << 1
 
 
-class MaaDbgControllerTypeEnum(IntEnum):
-    Null = 0
-
-    CarouselImage = 1
-    ReplayRecording = 1 << 1
-
 
 FUNCTYPE = ctypes.WINFUNCTYPE if (platform.system() == "Windows") else ctypes.CFUNCTYPE
 
@@ -484,6 +518,12 @@ MaaToolkitAdbDeviceListHandle = ctypes.c_void_p
 MaaToolkitAdbDeviceHandle = ctypes.c_void_p
 MaaToolkitDesktopWindowListHandle = ctypes.c_void_p
 MaaToolkitDesktopWindowHandle = ctypes.c_void_p
+
+MaaMacOSPermission = ctypes.c_int32
+
+class MaaMacOSPermissionEnum(IntEnum):
+    ScreenCapture = 1
+    Accessibility = 2
 
 MaaAgentClientHandle = ctypes.c_void_p
 
@@ -583,6 +623,19 @@ class MaaCustomControllerCallbacks(ctypes.Structure):
         ctypes.c_int32,
         ctypes.c_void_p,
     )
+    RelativeMoveFunc = FUNCTYPE(
+        MaaBool,
+        ctypes.c_int32,
+        ctypes.c_int32,
+        ctypes.c_void_p,
+    )
+    ShellFunc = FUNCTYPE(
+        MaaBool,
+        ctypes.c_char_p,
+        ctypes.c_int64,
+        ctypes.c_void_p,
+        MaaStringBufferHandle,
+    )
     InactiveFunc = FUNCTYPE(
         MaaBool,
         ctypes.c_void_p,
@@ -610,6 +663,8 @@ class MaaCustomControllerCallbacks(ctypes.Structure):
         ("key_down", KeyDownFunc),
         ("key_up", KeyUpFunc),
         ("scroll", ScrollFunc),
+        ("relative_move", RelativeMoveFunc),
+        ("shell", ShellFunc),
         ("inactive", InactiveFunc),
         ("get_info", GetInfoFunc),
     ]
